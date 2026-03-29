@@ -1,10 +1,10 @@
 import { ValidationException } from "@/exceptions/base/base-exceptions"
 import { routeHandler } from "@/lib/handlers/route-handler"
-import { MovementsService } from "@/services/movements/movements.service"
-import { movementIdParamSchema } from "@/types/movements/dto/movement-id-param.dto"
-import { updateMovementSchema } from "@/types/movements/dto/update-movement.dto"
+import { TransactionsService } from "@/services/movements/movements.service"
+import { transactionIdParamSchema } from "@/types/movements/dto/movement-id-param.dto"
+import { updateTransactionSchema } from "@/types/movements/dto/update-movement.dto"
 
-const movementsService = new MovementsService()
+const transactionsService = new TransactionsService()
 
 export async function GET(
   _request: Request,
@@ -12,13 +12,13 @@ export async function GET(
 ) {
   return routeHandler(async () => {
     const params = await context.params
-    const parsedParams = movementIdParamSchema.safeParse(params)
+    const parsedParams = transactionIdParamSchema.safeParse(params)
 
     if (!parsedParams.success) {
-      throw new ValidationException(parsedParams.error.message, "Parámetros inválidos para movement.")
+      throw new ValidationException(parsedParams.error.message, "Parámetros inválidos para transacción.")
     }
 
-    return movementsService.getMovementById(parsedParams.data["movement-id"])
+    return transactionsService.getTransactionById(parsedParams.data["movement-id"])
   })
 }
 
@@ -28,18 +28,18 @@ export async function PATCH(
 ) {
   return routeHandler(async () => {
     const params = await context.params
-    const parsedParams = movementIdParamSchema.safeParse(params)
-    const parsedBody = updateMovementSchema.safeParse(await request.json())
+    const parsedParams = transactionIdParamSchema.safeParse(params)
+    const parsedBody = updateTransactionSchema.safeParse(await request.json())
 
     if (!parsedParams.success) {
-      throw new ValidationException(parsedParams.error.message, "Parámetros inválidos para movement.")
+      throw new ValidationException(parsedParams.error.message, "Parámetros inválidos para transacción.")
     }
 
     if (!parsedBody.success) {
-      throw new ValidationException(parsedBody.error.message, "Body inválido para actualizar movimiento.")
+      throw new ValidationException(parsedBody.error.message, "Body inválido para actualizar transacción.")
     }
 
-    return movementsService.updateMovement(parsedParams.data["movement-id"], parsedBody.data)
+    return transactionsService.updateTransaction(parsedParams.data["movement-id"], parsedBody.data)
   })
 }
 
@@ -49,12 +49,12 @@ export async function DELETE(
 ) {
   return routeHandler(async () => {
     const params = await context.params
-    const parsedParams = movementIdParamSchema.safeParse(params)
+    const parsedParams = transactionIdParamSchema.safeParse(params)
 
     if (!parsedParams.success) {
-      throw new ValidationException(parsedParams.error.message, "Parámetros inválidos para movement.")
+      throw new ValidationException(parsedParams.error.message, "Parámetros inválidos para transacción.")
     }
 
-    return movementsService.deleteMovement(parsedParams.data["movement-id"])
+    return transactionsService.deleteTransaction(parsedParams.data["movement-id"])
   })
 }

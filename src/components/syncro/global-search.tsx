@@ -4,8 +4,19 @@ import { useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { ArrowLeftRight, FileText, Search, Users, X } from "lucide-react"
 
-import { useStore } from "@/lib/store"
-import { getClientRecords, getInvoiceBucket } from "@/lib/syncro"
+import { useInvoices } from "@/hooks/use-invoices"
+import { useTransactions } from "@/hooks/use-transactions"
+import { useClients } from "@/hooks/use-clients"
+import {
+  formatCurrency,
+  formatSignedCurrency,
+  getInvoiceBucket,
+  getInvoiceBucketLabel,
+  getMovementSourceLabel,
+  getRiskLabel,
+  getSignedTransactionAmount,
+  type MovementTab,
+} from "@/lib/syncro"
 import { cn } from "@/lib/utils"
 
 type SearchResult = {
@@ -24,14 +35,20 @@ const typeIcon = {
   client: Users,
 }
 
+const typeLabel = {
+  invoice: "Factura",
+  transaction: "Movimiento",
+  client: "Cliente",
+}
+
 export function GlobalSearch({ open, onClose }: Props) {
   const router = useRouter()
-  const invoices = useStore((state) => state.invoices)
-  const transactions = useStore((state) => state.transactions)
+  const { invoices } = useInvoices()
+  const { transactions } = useTransactions()
+  const { clients } = useClients()
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState(0)
 
-  const clientRecords = useMemo(() => getClientRecords(invoices), [invoices])
   const results = useMemo(() => {
     const value = query.trim().toLowerCase()
     if (!value) return []
@@ -47,7 +64,7 @@ export function GlobalSearch({ open, onClose }: Props) {
         nextResults.push({
           id: invoice.id,
           label: `${invoice.id} - ${invoice.client}`,
-          sublabel: `${invoice.amount.toLocaleString()} - ${getInvoiceBucket(invoice)}`,
+          sublabel: `${formatCurrency(invoice.amount)} · ${getInvoiceBucketLabel(getInvoiceBucket(invoice))}`,
           type: "invoice",
           href: `/invoices?highlight=${invoice.id}`,
         })
@@ -55,27 +72,29 @@ export function GlobalSearch({ open, onClose }: Props) {
     })
 
     transactions.forEach((transaction) => {
+      const tab: MovementTab = transaction.status === "duplicate" ? "duplicate" : transaction.status === "confirmed" ? "confirmed" : "pending_review"
       if (
         transaction.description.toLowerCase().includes(value) ||
         transaction.category.toLowerCase().includes(value) ||
-        transaction.notes?.toLowerCase().includes(value)
+        transaction.notes?.toLowerCase().includes(value) ||
+        transaction.invoiceId?.toLowerCase().includes(value)
       ) {
         nextResults.push({
           id: transaction.id,
           label: transaction.description,
-          sublabel: `${transaction.amount > 0 ? "+" : "-"}$${Math.abs(transaction.amount).toLocaleString()} - ${transaction.category}`,
+          sublabel: `${formatSignedCurrency(getSignedTransactionAmount(transaction))} · ${transaction.category} · ${transaction.invoiceId ? `Factura ${transaction.invoiceId}` : getMovementSourceLabel(transaction.source)}`,
           type: "transaction",
-          href: `/movements?tab=${transaction.status}&highlight=${transaction.id}`,
+          href: `/movements?tab=${tab}&highlight=${transaction.id}`,
         })
       }
     })
 
-    clientRecords.forEach((client) => {
+    clients.forEach((client) => {
       if (client.name.toLowerCase().includes(value) || client.industry.toLowerCase().includes(value)) {
         nextResults.push({
           id: client.id,
           label: client.name,
-          sublabel: `${client.totalOwed.toLocaleString()} open - ${client.riskScore} risk`,
+          sublabel: `Te deben ${formatCurrency(client.totalOwed)} · Riesgo ${getRiskLabel(client.riskScore).toLowerCase()}`,
           type: "client",
           href: `/clients?highlight=${client.id}`,
         })
@@ -83,7 +102,7 @@ export function GlobalSearch({ open, onClose }: Props) {
     })
 
     return nextResults.slice(0, 8)
-  }, [clientRecords, invoices, query, transactions])
+  }, [clients, invoices, query, transactions])
 
   useEffect(() => {
     if (!open) {
@@ -118,7 +137,7 @@ export function GlobalSearch({ open, onClose }: Props) {
             autoFocus
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search invoices, movements, and clients"
+            placeholder="Buscar facturas, movimientos y clientes"
             className="flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
           />
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
@@ -145,7 +164,7 @@ export function GlobalSearch({ open, onClose }: Props) {
                       <p className="truncate text-xs text-muted-foreground">{result.sublabel}</p>
                     </div>
                     <span className="rounded border bg-muted px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">
-                      {result.type}
+                      {typeLabel[result.type]}
                     </span>
                   </button>
                 </li>
@@ -156,13 +175,13 @@ export function GlobalSearch({ open, onClose }: Props) {
 
         {query && results.length === 0 && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-            No results found for "{query}".
+            Sin resultados para &quot;{query}&quot;.
           </div>
         )}
 
         {!query && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-            Search live invoices, movements, and client records.
+            Buscá facturas, movimientos y clientes.
           </div>
         )}
       </div>

@@ -15,5 +15,5 @@ export async function GET(request: Request) {
     }
 
     return clientsService.getClients()
-  })
+  }, { cacheSeconds: 120, staleWhileRevalidate: 240 })
 }

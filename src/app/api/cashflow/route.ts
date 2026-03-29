@@ -15,5 +15,5 @@ export async function GET(request: Request) {
     }
 
     return cashflowService.getCashflow(parsedQuery.data)
-  })
+  }, { cacheSeconds: 60, staleWhileRevalidate: 120 })
 }

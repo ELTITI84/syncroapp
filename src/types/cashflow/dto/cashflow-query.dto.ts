@@ -9,6 +9,7 @@ export const cashflowQuerySchema = z.object({
   collectOverdue: booleanish,
   delaySupplier: booleanish,
   trimSaas: booleanish,
+  includeBaseline: booleanish,
 })
 
 export type CashflowQueryDto = z.infer<typeof cashflowQuerySchema>

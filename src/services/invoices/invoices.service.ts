@@ -1,7 +1,6 @@
-import { ValidationException } from "@/exceptions/base/base-exceptions"
 import { InvoiceNotFoundException } from "@/exceptions/invoices/invoices-exceptions"
 import type { Invoice } from "@/lib/data"
-import { matchesInvoiceFilter } from "@/lib/syncro"
+import { getInvoiceSummary, getInvoiceType, matchesInvoiceFilter } from "@/lib/syncro"
 import { InvoicesRepository } from "@/repositories/invoices/invoices.repository"
 import type { CreateInvoiceDto } from "@/types/invoices/dto/create-invoice.dto"
 import type { InvoicesQueryDto } from "@/types/invoices/dto/invoices-query.dto"
@@ -13,19 +12,26 @@ export class InvoicesService {
   async getInvoices(query: InvoicesQueryDto) {
     const invoices = await this.invoicesRepository.getInvoices()
     const search = query.search?.trim().toLowerCase()
+    const filteredInvoices = invoices.filter((invoice) => {
+      const matchesStatus = query.status ? matchesInvoiceFilter(invoice, query.status as never) : true
+      const matchesType = query.type ? getInvoiceType(invoice) === query.type : true
+      const matchesClient = query.client ? invoice.clientId === query.client : true
+      const matchesSearch =
+        !search ||
+        invoice.id.toLowerCase().includes(search) ||
+        invoice.client.toLowerCase().includes(search) ||
+        invoice.description.toLowerCase().includes(search)
+
+      return matchesStatus && matchesType && matchesClient && matchesSearch
+    })
 
     return {
-      invoices: invoices.filter((invoice) => {
-        const matchesStatus = query.status ? matchesInvoiceFilter(invoice, query.status as never) : true
-        const matchesClient = query.client ? invoice.clientId === query.client : true
-        const matchesSearch =
-          !search ||
-          invoice.id.toLowerCase().includes(search) ||
-          invoice.client.toLowerCase().includes(search) ||
-          invoice.description.toLowerCase().includes(search)
-
-        return matchesStatus && matchesClient && matchesSearch
-      }),
+      invoices: filteredInvoices,
+      groupedInvoices: {
+        receivable: filteredInvoices.filter((invoice) => getInvoiceType(invoice) === "receivable"),
+        payable: filteredInvoices.filter((invoice) => getInvoiceType(invoice) === "payable"),
+      },
+      metrics: getInvoiceSummary(filteredInvoices),
     }
   }
 
@@ -40,32 +46,23 @@ export class InvoicesService {
   }
 
   async createInvoice(payload: CreateInvoiceDto) {
-    const clients = await this.invoicesRepository.getClients()
-    const client = clients.find((item) => item.id === payload.clientId)
-
-    if (!client) {
-      throw new ValidationException("Client does not exist", "No pudimos encontrar ese cliente.")
-    }
-
     const invoice: Invoice = {
       id: `INV-${String(Date.now()).slice(-6)}`,
-      client: client.name,
-      clientId: client.id,
+      client: payload.clientId,
+      clientId: payload.clientId,
       amount: payload.amount,
+      totalAmount: payload.amount,
+      paidAmount: 0,
+      type: payload.type,
       issueDate: payload.issueDate,
       dueDate: payload.dueDate,
       status: "pending",
       description: payload.description,
       owner: payload.owner,
       priority: payload.priority,
+      notes: payload.notes,
       paymentHistory: [],
-      expectedPayments: [
-        {
-          date: payload.dueDate,
-          amount: payload.amount,
-          note: "Expected on the invoice due date.",
-        },
-      ],
+      expectedPayments: [],
     }
 
     return this.invoicesRepository.createInvoice(invoice)
@@ -87,12 +84,8 @@ export class InvoicesService {
   }
 
   async deleteInvoice(invoiceId: string) {
-    const deletedInvoice = await this.invoicesRepository.deleteInvoice(invoiceId)
-
-    if (!deletedInvoice) {
-      throw new InvoiceNotFoundException(invoiceId)
-    }
-
+    await this.getInvoiceById(invoiceId)
+    await this.invoicesRepository.deleteInvoice(invoiceId)
     return { success: true, invoiceId }
   }
 }

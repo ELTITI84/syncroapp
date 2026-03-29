@@ -13,10 +13,12 @@ export class CashflowService {
     collectOverdue?: boolean
     delaySupplier?: boolean
     trimSaas?: boolean
+    includeBaseline?: boolean
   }) {
-    const [invoices, transactions] = await Promise.all([
+    const [invoices, transactions, scheduledEvents] = await Promise.all([
       this.cashflowRepository.getInvoices(),
       this.cashflowRepository.getTransactions(),
+      this.cashflowRepository.getScheduledCashEvents(),
     ])
 
     const scenario: ScenarioState = {
@@ -25,12 +27,22 @@ export class CashflowService {
       trim_saas: Boolean(query.trimSaas),
     }
 
-    const points = buildCashflowSeries(invoices, transactions, scenario)
+    const points = buildCashflowSeries(invoices, transactions, scheduledEvents, scenario)
+    const metrics = getCashflowMetrics(points, transactions)
+    const baselinePoints = query.includeBaseline
+      ? buildCashflowSeries(invoices, transactions, scheduledEvents)
+      : null
 
     return {
-      metrics: getCashflowMetrics(points, transactions),
+      metrics,
       points,
-      forecastEvents: buildForecastEvents(invoices, scenario),
+      forecastEvents: buildForecastEvents(invoices, scheduledEvents, scenario),
+      baseline: baselinePoints
+        ? {
+            metrics: getCashflowMetrics(baselinePoints, transactions),
+            points: baselinePoints,
+          }
+        : undefined,
     }
   }
 }

@@ -1,19 +1,36 @@
+import { AuthenticatedRepository } from "@/repositories/base/authenticated.repository"
 import {
-  listMockInvoices,
-  listMockScheduledCashEvents,
-  listMockTransactions,
-} from "@/repositories/mock/mock-state"
+  dbRowToInvoice,
+  dbRowToScheduledCashEvent,
+  dbRowToTransaction,
+} from "@/repositories/base/row-mappers"
 
-export class CashflowRepository {
+export class CashflowRepository extends AuthenticatedRepository {
   async getInvoices() {
-    return listMockInvoices()
+    const data = await this.fetchAllRows("invoices", "*", {
+      orderBy: "created_at",
+      ascending: false,
+    })
+    return data.map(dbRowToInvoice)
   }
 
   async getTransactions() {
-    return listMockTransactions()
+    const data = await this.fetchAllRows("transactions", "*, categories(name)", {
+      orderBy: "date",
+      ascending: false,
+    })
+    return data.map(dbRowToTransaction)
   }
 
   async getScheduledCashEvents() {
-    return listMockScheduledCashEvents()
+    const [supabase, userId] = await this.getClientAndUserId()
+    const { data, error } = await supabase
+      .from("forecast_events")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("is_active", true)
+      .order("event_date", { ascending: true })
+    if (error) throw new Error(error.message)
+    return (data ?? []).map(dbRowToScheduledCashEvent)
   }
 }

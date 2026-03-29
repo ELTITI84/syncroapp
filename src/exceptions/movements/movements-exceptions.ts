@@ -1,7 +1,7 @@
 import { NotFoundException } from "@/exceptions/base/base-exceptions"
 
-export class MovementNotFoundException extends NotFoundException {
-  constructor(movementId: string) {
-    super(`Movement ${movementId} not found`, "El movimiento solicitado no existe.")
+export class TransactionNotFoundException extends NotFoundException {
+  constructor(transactionId: string) {
+    super(`Transaction ${transactionId} not found`, "La transacción solicitada no existe.")
   }
 }

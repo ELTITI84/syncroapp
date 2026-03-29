@@ -1,9 +1,9 @@
 import type { Transaction } from "@/lib/data"
 import type { MovementTab } from "@/lib/syncro"
 
-export type MovementModel = Transaction
-export type MovementStatusTab = MovementTab
+export type TransactionModel = Transaction
+export type TransactionStatusTab = MovementTab
 
-export type MovementsListResult = {
-  movements: MovementModel[]
+export type TransactionsListResult = {
+  transactions: TransactionModel[]
 }

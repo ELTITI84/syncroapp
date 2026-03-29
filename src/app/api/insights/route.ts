@@ -15,5 +15,5 @@ export async function GET(request: Request) {
     }
 
     return insightsService.getInsights()
-  })
+  }, { cacheSeconds: 120, staleWhileRevalidate: 240 })
 }

@@ -46,23 +46,29 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
-import { clients } from "@/lib/data"
-import { useStore } from "@/lib/store"
+import { useClients } from "@/hooks/use-clients"
+import { useInvoices } from "@/hooks/use-invoices"
+import { useTransactions } from "@/hooks/use-transactions"
 import {
   buildHref,
   formatCurrency,
   formatSignedCurrency,
   formatShortDate,
   getBurnRate,
-  getClientRecords,
   getInvoiceBucket,
+  getInvoiceBucketLabel,
+  getInvoiceType,
   getInvoiceSummary,
+  getInvoiceOutstandingAmount,
+  getPriorityLabel,
   matchesInvoiceFilter,
   type InvoiceFilter,
 } from "@/lib/syncro"
 import { cn } from "@/lib/utils"
 
 const filterOptions: InvoiceFilter[] = ["all", "overdue", "due-soon", "expected", "pending", "paid"]
+const invoiceTypeOptions = ["all", "receivable", "payable"] as const
+type InvoiceTypeFilter = (typeof invoiceTypeOptions)[number]
 
 function toneForBucket(bucket: InvoiceFilter) {
   if (bucket === "overdue") return "bg-danger/15 text-danger hover:bg-danger/15"
@@ -74,32 +80,34 @@ function toneForBucket(bucket: InvoiceFilter) {
 export function InvoicesContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const invoices = useStore((state) => state.invoices)
-  const transactions = useStore((state) => state.transactions)
-  const addInvoice = useStore((state) => state.addInvoice)
-  const markInvoicePaid = useStore((state) => state.markInvoicePaid)
+  const { invoices, isLoading, createInvoice, markInvoicePaid: markPaid } = useInvoices()
+  const { transactions } = useTransactions()
+  const { clients: clientRecords } = useClients()
 
   const [statusFilter, setStatusFilter] = useState<InvoiceFilter>("all")
+  const [typeFilter, setTypeFilter] = useState<InvoiceTypeFilter>("all")
   const [clientFilter, setClientFilter] = useState("all")
   const [search, setSearch] = useState("")
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [form, setForm] = useState({
-    clientId: clients[0]?.id ?? "",
+    clientId: "",
     amount: "",
     issueDate: new Date().toISOString().slice(0, 10),
     dueDate: "",
     description: "",
-    owner: "Revenue Ops",
+    owner: "Cobros",
     priority: "medium" as "high" | "medium" | "low",
   })
 
   useEffect(() => {
     const nextStatus = (searchParams.get("status") as InvoiceFilter | null) ?? "all"
+    const nextType = (searchParams.get("type") as InvoiceTypeFilter | null) ?? "all"
     const nextClient = searchParams.get("client") ?? "all"
     const highlight = searchParams.get("highlight")
 
     setStatusFilter(filterOptions.includes(nextStatus) ? nextStatus : "all")
+    setTypeFilter(invoiceTypeOptions.includes(nextType) ? nextType : "all")
     setClientFilter(nextClient)
 
     if (highlight && invoices.some((invoice) => invoice.id === highlight)) {
@@ -107,16 +115,22 @@ export function InvoicesContent() {
     }
   }, [searchParams, invoices])
 
-  const clientRecords = useMemo(() => getClientRecords(invoices), [invoices])
-  const invoiceSummary = useMemo(() => getInvoiceSummary(invoices), [invoices])
   const burnRate = useMemo(() => getBurnRate(transactions), [transactions])
   const selectedInvoice = useMemo(
     () => invoices.find((invoice) => invoice.id === selectedInvoiceId) ?? null,
     [invoices, selectedInvoiceId],
   )
+  const scopedInvoices = useMemo(
+    () =>
+      typeFilter === "all"
+        ? invoices
+        : invoices.filter((invoice) => getInvoiceType(invoice) === typeFilter),
+    [invoices, typeFilter],
+  )
+  const scopedSummary = useMemo(() => getInvoiceSummary(scopedInvoices), [scopedInvoices])
 
   const filteredInvoices = useMemo(() => {
-    return invoices.filter((invoice) => {
+    return scopedInvoices.filter((invoice) => {
       const matchesStatus = matchesInvoiceFilter(invoice, statusFilter)
       const matchesClient = clientFilter === "all" || invoice.clientId === clientFilter
       const query = search.trim().toLowerCase()
@@ -128,42 +142,85 @@ export function InvoicesContent() {
 
       return matchesStatus && matchesClient && matchesQuery
     })
-  }, [clientFilter, invoices, search, statusFilter])
+  }, [clientFilter, scopedInvoices, search, statusFilter])
+
+  const dueSoonInvoices = useMemo(
+    () => scopedInvoices.filter((invoice) => getInvoiceBucket(invoice) === "due-soon"),
+    [scopedInvoices],
+  )
+  const openInvoices = useMemo(() => scopedInvoices.filter((invoice) => getInvoiceOutstandingAmount(invoice) > 0), [scopedInvoices])
+  const paidInvoices = useMemo(() => scopedInvoices.filter((invoice) => getInvoiceOutstandingAmount(invoice) <= 0), [scopedInvoices])
+
+  const runwayImpactMap = useMemo(
+    () =>
+      new Map(
+        filteredInvoices.map((invoice) => [
+          invoice.id,
+          Math.max(1, Math.round(invoice.amount / Math.max(burnRate, 1))),
+        ]),
+      ),
+    [filteredInvoices, burnRate],
+  )
 
   const focusCollections = searchParams.get("focus") === "collections"
 
   const summaryCards = [
     {
-      label: "Outstanding",
-      value: formatCurrency(invoiceSummary.outstandingAmount),
-      detail: `${invoices.filter((invoice) => invoice.status !== "paid").length} open invoices`,
+      label: "Abiertas",
+      value: formatCurrency(scopedSummary.outstandingAmount),
+      detail: `${openInvoices.length} facturas siguen abiertas`,
       icon: ArrowUpRight,
       tone: "text-foreground",
-      href: "/invoices?status=pending",
+      href: buildHref({
+        pathname: "/invoices",
+        params: {
+          status: "pending",
+          ...(typeFilter !== "all" ? { type: typeFilter } : {}),
+        },
+      }),
     },
     {
-      label: "Overdue",
-      value: formatCurrency(invoiceSummary.overdueAmount),
-      detail: `${invoiceSummary.overdueCount} invoices need collection`,
+      label: "Vencidas",
+      value: formatCurrency(scopedSummary.overdueAmount),
+      detail: `${scopedSummary.overdueCount} necesitan acción ahora`,
       icon: AlertTriangle,
       tone: "text-danger",
-      href: "/invoices?status=overdue&focus=collections",
+      href: buildHref({
+        pathname: "/invoices",
+        params: {
+          status: "overdue",
+          focus: "collections",
+          ...(typeFilter !== "all" ? { type: typeFilter } : {}),
+        },
+      }),
     },
     {
-      label: "Due soon",
-      value: formatCurrency(invoiceSummary.dueSoonAmount),
-      detail: `${invoiceSummary.dueSoonCount} invoices due in 7 days`,
+      label: "Por vencer",
+      value: formatCurrency(dueSoonInvoices.reduce((sum, invoice) => sum + getInvoiceOutstandingAmount(invoice), 0)),
+      detail: `${dueSoonInvoices.length} vencen en los próximos 7 días`,
       icon: Clock3,
       tone: "text-warning",
-      href: "/invoices?status=due-soon",
+      href: buildHref({
+        pathname: "/invoices",
+        params: {
+          status: "due-soon",
+          ...(typeFilter !== "all" ? { type: typeFilter } : {}),
+        },
+      }),
     },
     {
-      label: "Collected",
-      value: formatCurrency(invoiceSummary.paidAmount),
-      detail: "Paid invoices already closed",
+      label: "Cerradas",
+      value: formatCurrency(scopedSummary.paidAmount),
+      detail: `${paidInvoices.length} ya no necesitan seguimiento`,
       icon: CheckCircle2,
       tone: "text-success",
-      href: "/invoices?status=paid",
+      href: buildHref({
+        pathname: "/invoices",
+        params: {
+          status: "paid",
+          ...(typeFilter !== "all" ? { type: typeFilter } : {}),
+        },
+      }),
     },
   ]
 
@@ -191,61 +248,59 @@ export function InvoicesContent() {
     anchor.download = "syncro-invoices.csv"
     anchor.click()
     URL.revokeObjectURL(url)
-    toast.success("Invoices exported")
+    toast.success("Facturas exportadas")
   }
 
-  const handleCreateInvoice = () => {
-    const client = clients.find((item) => item.id === form.clientId)
-    if (!client) return
+  const handleCreateInvoice = async () => {
+    if (!form.clientId || !form.amount) return
 
-    const id = `INV-${String(Date.now()).slice(-3)}`
-
-    addInvoice({
-      id,
-      client: client.name,
-      clientId: client.id,
+    await createInvoice({
+      clientId: form.clientId,
       amount: Number(form.amount),
+      type: "receivable",
       issueDate: form.issueDate,
       dueDate: form.dueDate,
-      status: "pending",
       description: form.description,
       owner: form.owner,
       priority: form.priority,
-      paymentHistory: [],
-      expectedPayments: form.dueDate
-        ? [
-            {
-              date: form.dueDate,
-              amount: Number(form.amount),
-              note: "Expected on the invoice due date.",
-            },
-          ]
-        : [],
     })
 
-    toast.success("Invoice added to the workspace")
+    toast.success("Factura agregada", {
+      description: "Ya quedó disponible en cobros y en el flujo proyectado.",
+    })
     setCreateOpen(false)
-    setSelectedInvoiceId(id)
     setForm({
-      clientId: clients[0]?.id ?? "",
+      clientId: "",
       amount: "",
       issueDate: new Date().toISOString().slice(0, 10),
       dueDate: "",
       description: "",
-      owner: "Revenue Ops",
+      owner: "Cobros",
       priority: "medium",
     })
   }
 
   const handleSendReminder = (invoiceId: string, clientName: string) => {
-    toast.success(`Reminder queued for ${clientName}`, {
-      description: `The workflow is mocked, but the action is now wired for ${invoiceId}.`,
+    toast.success(`Recordatorio listo para ${clientName}`, {
+      description: `La acción quedó conectada para la factura ${invoiceId}.`,
     })
   }
 
-  const handleMarkPaid = (invoiceId: string) => {
-    markInvoicePaid(invoiceId)
-    toast.success("Invoice marked as collected")
+  const handleMarkPaid = async (invoiceId: string) => {
+    const invoice = invoices.find((inv) => inv.id === invoiceId)
+    if (!invoice) return
+    await markPaid(invoice)
+    toast.success(getInvoiceType(invoice) === "payable" ? "Factura marcada como pagada" : "Factura marcada como cobrada")
+  }
+
+  if (isLoading) {
+    return (
+      <div className="mx-auto flex max-w-7xl flex-col gap-6 p-6">
+        <div className="animate-pulse rounded-xl border bg-card p-6">
+          <div className="h-6 w-56 rounded bg-muted" />
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -253,19 +308,19 @@ export function InvoicesContent() {
       <div className="mx-auto flex max-w-7xl flex-col gap-6 p-6">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight text-foreground">Invoices</h1>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">Cobros y pagos</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Collection management, due-date prioritization, and invoice-level cash impact.
+              Acá ves qué facturas siguen abiertas, cuáles ya deberían haber entrado y qué conviene mover hoy.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" onClick={exportCSV}>
               <Download className="size-4" />
-              Export CSV
+              Exportar CSV
             </Button>
             <Button onClick={() => setCreateOpen(true)}>
               <FilePlus2 className="size-4" />
-              New invoice
+              Nueva factura
             </Button>
           </div>
         </div>
@@ -277,15 +332,15 @@ export function InvoicesContent() {
                 <AlertTriangle className="mt-0.5 size-5 text-danger" />
                 <div>
                   <p className="text-sm font-semibold text-danger">
-                    Overdue invoices are the fastest lever to protect cash.
+                    Las facturas vencidas son la forma más rápida de cuidar la caja.
                   </p>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Start with Acme and Delta. Those clients explain most of the short-term forecast pressure.
+                    Empezá por Acme y Delta. Son los clientes que más explican la presión de corto plazo.
                   </p>
                 </div>
               </div>
               <Button onClick={() => router.push("/cashflow?focus=zero-day")}>
-                See cash impact
+                Ver impacto en caja
               </Button>
             </CardContent>
           </Card>
@@ -325,9 +380,9 @@ export function InvoicesContent() {
           <CardHeader className="space-y-4">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
-                <CardTitle>Invoice list</CardTitle>
+                <CardTitle>Lista de facturas</CardTitle>
                 <CardDescription>
-                  Filter by payment urgency, client, or search terms. Clicking a row opens a usable detail panel.
+                  Filtrá por urgencia, cliente o texto. Abrí una fila para entender qué significa y qué conviene hacer.
                 </CardDescription>
               </div>
               <div className="flex w-full flex-col gap-3 lg:w-auto lg:flex-row">
@@ -337,15 +392,15 @@ export function InvoicesContent() {
                     value={search}
                     onChange={(event) => setSearch(event.target.value)}
                     className="pl-9"
-                    placeholder="Search client, invoice, or description"
+                    placeholder="Buscar cliente, factura o detalle"
                   />
                 </div>
                 <Select value={clientFilter} onValueChange={setClientFilter}>
                   <SelectTrigger className="w-full lg:w-[220px]">
-                    <SelectValue placeholder="All clients" />
+                    <SelectValue placeholder="Todos los clientes" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All clients</SelectItem>
+                    <SelectItem value="all">Todos los clientes</SelectItem>
                     {clientRecords.map((client) => (
                       <SelectItem key={client.id} value={client.id}>
                         {client.name}
@@ -359,38 +414,65 @@ export function InvoicesContent() {
             <Tabs value={statusFilter} onValueChange={(value) => setStatusFilter(value as InvoiceFilter)}>
               <TabsList className="flex w-full flex-wrap justify-start">
                 {filterOptions.map((option) => (
-                  <TabsTrigger key={option} value={option} className="capitalize">
-                    {option.replace("-", " ")}
+                  <TabsTrigger key={option} value={option}>
+                    {getInvoiceBucketLabel(option)}
                   </TabsTrigger>
                 ))}
               </TabsList>
             </Tabs>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant={typeFilter === "all" ? "default" : "outline"}
+                onClick={() => setTypeFilter("all")}
+              >
+                Todas
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={typeFilter === "receivable" ? "default" : "outline"}
+                onClick={() => setTypeFilter("receivable")}
+              >
+                Esto te deben
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={typeFilter === "payable" ? "default" : "outline"}
+                onClick={() => setTypeFilter("payable")}
+              >
+                Esto tenés que pagar
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="px-6 pb-6">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Invoice</TableHead>
-                  <TableHead>Client</TableHead>
-                  <TableHead>Amount</TableHead>
-                  <TableHead>Due date</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Impact</TableHead>
-                  <TableHead className="text-right">Action</TableHead>
+                  <TableHead>Factura</TableHead>
+                  <TableHead>Cliente</TableHead>
+                  <TableHead>Monto</TableHead>
+                  <TableHead>Vence</TableHead>
+                  <TableHead>Estado</TableHead>
+                  <TableHead>Qué cambia</TableHead>
+                  <TableHead className="text-right">Acción</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredInvoices.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={7} className="h-24 text-center text-sm text-muted-foreground">
-                      No invoices match the current filters.
+                      No hay facturas que coincidan con los filtros actuales.
                     </TableCell>
                   </TableRow>
                 ) : (
                   filteredInvoices.map((invoice) => {
                     const bucket = getInvoiceBucket(invoice)
                     const highlighted = searchParams.get("highlight") === invoice.id
-                    const runwayImpact = Math.max(1, Math.round(invoice.amount / Math.max(burnRate, 1)))
+                    const runwayImpact = runwayImpactMap.get(invoice.id) ?? 1
 
                     return (
                       <TableRow
@@ -404,7 +486,7 @@ export function InvoicesContent() {
                         <TableCell>
                           <div>
                             <p className="font-medium text-foreground">{invoice.id}</p>
-                            <p className="text-xs text-muted-foreground">{invoice.owner}</p>
+                            <p className="text-xs text-muted-foreground">Responsable: {invoice.owner}</p>
                           </div>
                         </TableCell>
                         <TableCell>{invoice.client}</TableCell>
@@ -412,27 +494,27 @@ export function InvoicesContent() {
                         <TableCell>
                           <div className="flex items-center gap-2 text-sm">
                             <CalendarDays className="size-4 text-muted-foreground" />
-                            {formatShortDate(invoice.dueDate)}
+                            {formatShortDate(invoice.dueDate, "Sin vencimiento")}
                           </div>
                         </TableCell>
                         <TableCell>
-                          <Badge className={toneForBucket(bucket)}>{bucket.replace("-", " ")}</Badge>
+                          <Badge className={toneForBucket(bucket)}>{getInvoiceBucketLabel(bucket)}</Badge>
                         </TableCell>
                         <TableCell>
                           <div>
                             <p className="text-sm font-medium text-foreground">
-                              {invoice.status === "paid" ? "Already collected" : `+${runwayImpact} runway days`}
+                              {getInvoiceOutstandingAmount(invoice) <= 0 ? "Ya impactó en caja" : `+${runwayImpact} días de aire`}
                             </p>
                             <p className="text-xs text-muted-foreground">
-                              {invoice.status === "paid"
-                                ? "Closed and reflected in cash."
-                                : `Collecting it adds ${formatCurrency(invoice.amount)} to cash.`}
+                              {getInvoiceOutstandingAmount(invoice) <= 0
+                                ? "Esta factura ya quedó cerrada."
+                                : `Si entra, suma ${formatCurrency(getInvoiceOutstandingAmount(invoice))} a la caja.`}
                             </p>
                           </div>
                         </TableCell>
                         <TableCell className="text-right">
                           <Button variant="ghost" size="sm">
-                            Open
+                            Abrir
                             <ChevronRight className="size-4" />
                           </Button>
                         </TableCell>
@@ -453,15 +535,15 @@ export function InvoicesContent() {
               <SheetHeader className="border-b pb-4">
                 <div className="flex items-center gap-2">
                   <Badge className={toneForBucket(getInvoiceBucket(selectedInvoice))}>
-                    {getInvoiceBucket(selectedInvoice).replace("-", " ")}
+                    {getInvoiceBucketLabel(getInvoiceBucket(selectedInvoice))}
                   </Badge>
                   <Badge className="bg-muted text-muted-foreground hover:bg-muted">
-                    {selectedInvoice.priority} priority
+                    Prioridad {getPriorityLabel(selectedInvoice.priority).toLowerCase()}
                   </Badge>
                 </div>
                 <SheetTitle className="mt-3 text-xl">{selectedInvoice.id}</SheetTitle>
                 <SheetDescription>
-                  {selectedInvoice.client} - owned by {selectedInvoice.owner}
+                  {selectedInvoice.client} · Responsable: {selectedInvoice.owner}
                 </SheetDescription>
               </SheetHeader>
 
@@ -469,58 +551,58 @@ export function InvoicesContent() {
                 <Card>
                   <CardContent className="grid gap-4 px-5 py-5 sm:grid-cols-2">
                     <div>
-                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Amount</p>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Monto</p>
                       <p className="mt-2 text-2xl font-bold text-foreground">
                         {formatCurrency(selectedInvoice.amount)}
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Cash impact</p>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Impacto en caja</p>
                       <p className="mt-2 text-lg font-semibold text-success">
-                        +{Math.max(1, Math.round(selectedInvoice.amount / Math.max(burnRate, 1)))} runway days
+                        +{Math.max(1, Math.round(selectedInvoice.amount / Math.max(burnRate, 1)))} días de aire
                       </p>
                     </div>
                     <div className="rounded-xl border border-border/80 bg-muted/10 p-4">
-                      <p className="text-xs text-muted-foreground">Issue date</p>
+                      <p className="text-xs text-muted-foreground">Emitida</p>
                       <p className="mt-1 font-medium text-foreground">{formatShortDate(selectedInvoice.issueDate)}</p>
                     </div>
                     <div className="rounded-xl border border-border/80 bg-muted/10 p-4">
-                      <p className="text-xs text-muted-foreground">Due date</p>
-                      <p className="mt-1 font-medium text-foreground">{formatShortDate(selectedInvoice.dueDate)}</p>
+                      <p className="text-xs text-muted-foreground">Vence</p>
+                      <p className="mt-1 font-medium text-foreground">{formatShortDate(selectedInvoice.dueDate, "Sin vencimiento")}</p>
                     </div>
                   </CardContent>
                 </Card>
 
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-base">Why this matters</CardTitle>
+                    <CardTitle className="text-base">Qué significa</CardTitle>
                     <CardDescription>
-                      This invoice directly influences the short-term forecast.
+                      Este panel te dice por qué importa esta factura y qué conviene hacer ahora.
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-3 px-6 pb-6">
                     <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
-                      <p className="text-sm font-medium text-primary">What happens</p>
+                      <p className="text-sm font-medium text-primary">Qué pasa si entra</p>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        {selectedInvoice.status === "paid"
-                          ? "Cash already landed, so the forecast no longer depends on this invoice."
-                          : `If this invoice is collected, ${formatCurrency(selectedInvoice.amount)} lands in cash and relieves near-term pressure immediately.`}
+                        {getInvoiceOutstandingAmount(selectedInvoice) <= 0
+                          ? "La plata ya entró, así que el flujo ya no depende de esta factura."
+                          : `Si se cobra, entran ${formatCurrency(getInvoiceOutstandingAmount(selectedInvoice))} y se afloja la presión de corto plazo.`}
                       </p>
                     </div>
                     <div className="rounded-xl border border-border/80 bg-muted/10 p-4">
-                      <p className="text-sm font-medium text-foreground">Why it matters</p>
+                      <p className="text-sm font-medium text-foreground">Por qué mirarla</p>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        {selectedInvoice.status === "overdue"
-                          ? "It is already late, so the business is effectively financing the client."
-                          : "It is part of the next collection wave and should stay visible until it lands."}
+                        {getInvoiceBucket(selectedInvoice) === "overdue"
+                          ? "Ya está vencida, así que hoy tu negocio está financiando al cliente."
+                          : "Forma parte del próximo bloque de cobros y conviene tenerla visible hasta que entre."}
                       </p>
                     </div>
                     <div className="rounded-xl border border-border/80 bg-muted/10 p-4">
-                      <p className="text-sm font-medium text-foreground">Recommended action</p>
+                      <p className="text-sm font-medium text-foreground">Siguiente paso</p>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        {selectedInvoice.status === "paid"
-                          ? "No action needed other than keeping the payment history complete."
-                          : "Trigger a reminder, keep the expected payment visible, and escalate if the promise date slips."}
+                        {getInvoiceOutstandingAmount(selectedInvoice) <= 0
+                          ? "No hace falta hacer nada más que dejar completo el historial de pagos."
+                          : "Mandá un recordatorio, dejá visible la promesa de pago y escalá si la fecha se corre."}
                       </p>
                     </div>
                   </CardContent>
@@ -528,7 +610,7 @@ export function InvoicesContent() {
 
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-base">Description</CardTitle>
+                    <CardTitle className="text-base">Detalle</CardTitle>
                   </CardHeader>
                   <CardContent className="px-6 pb-6">
                     <p className="text-sm text-muted-foreground">{selectedInvoice.description}</p>
@@ -537,14 +619,14 @@ export function InvoicesContent() {
 
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-base">Payment history</CardTitle>
+                    <CardTitle className="text-base">Historial y próximos pagos</CardTitle>
                     <CardDescription>
-                      Historic and expected payments connected to this invoice.
+                      Acá ves lo que ya entró y lo que todavía está prometido.
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-3 px-6 pb-6">
                     {selectedInvoice.paymentHistory.length === 0 && selectedInvoice.expectedPayments.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">No payment events recorded yet.</p>
+                      <p className="text-sm text-muted-foreground">Todavía no hay movimientos registrados para esta factura.</p>
                     ) : (
                       <>
                         {selectedInvoice.paymentHistory.map((payment) => (
@@ -591,12 +673,12 @@ export function InvoicesContent() {
                   onClick={() => handleSendReminder(selectedInvoice.id, selectedInvoice.client)}
                 >
                   <Mail className="size-4" />
-                  Send reminder
+                  Enviar recordatorio
                 </Button>
-                {selectedInvoice.status !== "paid" && (
+                {getInvoiceOutstandingAmount(selectedInvoice) > 0 && (
                   <Button onClick={() => handleMarkPaid(selectedInvoice.id)}>
                     <CheckCircle2 className="size-4" />
-                    Mark as collected
+                    {getInvoiceType(selectedInvoice) === "payable" ? "Marcar como pagada" : "Marcar como cobrada"}
                   </Button>
                 )}
                 <Button
@@ -606,7 +688,7 @@ export function InvoicesContent() {
                     setSelectedInvoiceId(null)
                   }}
                 >
-                  Open client
+                  Abrir cliente
                 </Button>
               </SheetFooter>
             </>
@@ -617,23 +699,23 @@ export function InvoicesContent() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Create invoice</DialogTitle>
+            <DialogTitle>Nueva factura</DialogTitle>
             <DialogDescription>
-              Add a new invoice to the mocked workspace so it can influence collections and forecast.
+              Sumala para que aparezca en cobros y también en el flujo proyectado.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-2">
             <div className="grid gap-2">
-              <label className="text-sm font-medium text-foreground">Client</label>
+              <label className="text-sm font-medium text-foreground">Cliente</label>
               <Select
                 value={form.clientId}
                 onValueChange={(value) => setForm((current) => ({ ...current, clientId: value }))}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="Select a client" />
+                  <SelectValue placeholder="Elegí un cliente" />
                 </SelectTrigger>
                 <SelectContent>
-                  {clients.map((client) => (
+                  {clientRecords.map((client) => (
                     <SelectItem key={client.id} value={client.id}>
                       {client.name}
                     </SelectItem>
@@ -644,7 +726,7 @@ export function InvoicesContent() {
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="grid gap-2">
-                <label className="text-sm font-medium text-foreground">Amount</label>
+                <label className="text-sm font-medium text-foreground">Monto</label>
                 <Input
                   type="number"
                   value={form.amount}
@@ -653,18 +735,18 @@ export function InvoicesContent() {
                 />
               </div>
               <div className="grid gap-2">
-                <label className="text-sm font-medium text-foreground">Owner</label>
+                <label className="text-sm font-medium text-foreground">Responsable</label>
                 <Input
                   value={form.owner}
                   onChange={(event) => setForm((current) => ({ ...current, owner: event.target.value }))}
-                  placeholder="Revenue Ops"
+                  placeholder="Cobros"
                 />
               </div>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="grid gap-2">
-                <label className="text-sm font-medium text-foreground">Issue date</label>
+                <label className="text-sm font-medium text-foreground">Fecha de emisión</label>
                 <Input
                   type="date"
                   value={form.issueDate}
@@ -672,7 +754,7 @@ export function InvoicesContent() {
                 />
               </div>
               <div className="grid gap-2">
-                <label className="text-sm font-medium text-foreground">Due date</label>
+                <label className="text-sm font-medium text-foreground">Fecha de vencimiento</label>
                 <Input
                   type="date"
                   value={form.dueDate}
@@ -682,7 +764,7 @@ export function InvoicesContent() {
             </div>
 
             <div className="grid gap-2">
-              <label className="text-sm font-medium text-foreground">Priority</label>
+              <label className="text-sm font-medium text-foreground">Prioridad</label>
               <Select
                 value={form.priority}
                 onValueChange={(value) =>
@@ -693,31 +775,31 @@ export function InvoicesContent() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="high">High</SelectItem>
-                  <SelectItem value="medium">Medium</SelectItem>
-                  <SelectItem value="low">Low</SelectItem>
+                  <SelectItem value="high">Alta</SelectItem>
+                  <SelectItem value="medium">Media</SelectItem>
+                  <SelectItem value="low">Baja</SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
             <div className="grid gap-2">
-              <label className="text-sm font-medium text-foreground">Description</label>
+              <label className="text-sm font-medium text-foreground">Descripción</label>
               <Textarea
                 value={form.description}
                 onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
-                placeholder="Describe the work and why this invoice matters."
+                placeholder="Explicá qué se cobró y cualquier contexto útil para el equipo."
               />
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
-              Cancel
+              Cancelar
             </Button>
             <Button
               onClick={handleCreateInvoice}
               disabled={!form.clientId || !form.amount || !form.issueDate || !form.dueDate || !form.description}
             >
-              Create invoice
+              Crear factura
             </Button>
           </DialogFooter>
         </DialogContent>

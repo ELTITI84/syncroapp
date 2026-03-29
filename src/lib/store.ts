@@ -37,9 +37,11 @@ export const useStore = create<AppState>((set) => ({
       }
 
       const paidDate = new Date().toISOString().slice(0, 10)
-      const collectedSoFar = invoice.paymentHistory.reduce((sum, payment) => sum + payment.amount, 0)
-      const remainingAmount = Math.max(invoice.amount - collectedSoFar, 0)
-      const note = invoice.paymentHistory.length > 0 ? "Remaining balance collected" : "Marked as fully collected"
+      const totalAmount = invoice.totalAmount ?? invoice.amount
+      const collectedSoFar = invoice.paidAmount ?? invoice.paymentHistory.reduce((sum, payment) => sum + payment.amount, 0)
+      const remainingAmount = Math.max(totalAmount - collectedSoFar, 0)
+      const note = invoice.paymentHistory.length > 0 ? "Se cobró el saldo pendiente" : "Se marcó como cobrada"
+      const invoiceType = invoice.type ?? "receivable"
 
       return {
         invoices: state.invoices.map((item) =>
@@ -47,6 +49,7 @@ export const useStore = create<AppState>((set) => ({
             ? {
                 ...item,
                 status: "paid",
+                paidAmount: totalAmount,
                 expectedPayments: [],
                 paymentHistory: [
                   ...item.paymentHistory,
@@ -63,14 +66,14 @@ export const useStore = create<AppState>((set) => ({
           {
             id: `T${Date.now().toString().slice(-6)}`,
             date: paidDate,
-            description: `${invoice.client} payment`,
+            description: invoiceType === "payable" ? `Pago a proveedor ${invoice.client}` : `Cobro de ${invoice.client}`,
             amount: remainingAmount,
-            type: "income",
-            category: "Invoice payment",
+            type: invoiceType === "payable" ? "expense" : "income",
+            category: invoiceType === "payable" ? "Pago a proveedor" : "Cobro de factura",
             source: "manual",
             status: "confirmed",
             clientId: invoice.clientId,
-            relatedInvoiceId: invoice.id,
+            invoiceId: invoice.id,
           },
           ...state.transactions,
         ],

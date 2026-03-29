@@ -6,9 +6,12 @@ export class ClientsService {
   constructor(private readonly clientsRepository = new ClientsRepository()) {}
 
   async getClients() {
-    const invoices = await this.clientsRepository.getInvoices()
+    const [clients, invoices] = await Promise.all([
+      this.clientsRepository.getClients(),
+      this.clientsRepository.getInvoices(),
+    ])
     return {
-      clients: getClientRecords(invoices),
+      clients: getClientRecords(clients, invoices),
     }
   }
 

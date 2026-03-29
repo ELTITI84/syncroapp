@@ -15,5 +15,5 @@ export async function GET(request: Request) {
     }
 
     return dashboardService.getDashboardOverview()
-  })
+  }, { cacheSeconds: 60, staleWhileRevalidate: 120 })
 }
